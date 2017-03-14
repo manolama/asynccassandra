@@ -15,7 +15,11 @@ import org.hbase.async.Bytes.ByteMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.google.common.util.concurrent.FutureCallback;
+import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.common.util.concurrent.ListeningExecutorService;
+import com.google.common.util.concurrent.MoreExecutors;
 import com.netflix.astyanax.AstyanaxContext;
 import com.netflix.astyanax.ColumnListMutation;
 import com.netflix.astyanax.Keyspace;
@@ -76,7 +80,9 @@ public class HBaseClient {
   
   final Config config;
   final ExecutorService executor = Executors.newFixedThreadPool(25);
-
+  final ListeningExecutorService service = 
+      MoreExecutors.listeningDecorator(Executors.newFixedThreadPool(25));
+  
   final ByteMap<AstyanaxContext<Keyspace>> contexts = 
       new ByteMap<AstyanaxContext<Keyspace>>();
   final ByteMap<Keyspace> keyspaces = new ByteMap<Keyspace>();
@@ -187,6 +193,34 @@ public class HBaseClient {
       }
     }
     
+    class FutureCB implements FutureCallback<OperationResult<ColumnList<byte[]>>> {
+
+      @Override
+      public void onFailure(Throwable e) {
+        deferred.callback(e);
+      }
+
+      @Override
+      public void onSuccess(OperationResult<ColumnList<byte[]>> result) {
+        try {
+          // TODO - can track stats here
+          final ColumnList<byte[]> columns = result.getResult();
+          final ArrayList<KeyValue> kvs = new ArrayList<KeyValue>(columns.size());
+          final Iterator<Column<byte[]>> it = columns.iterator();
+          while (it.hasNext()) {
+            final Column<byte[]> column = it.next();
+            final KeyValue kv = new KeyValue(request.key, request.family(), 
+                column.getName(), column.getTimestamp() / 1000, // micro to ms 
+                column.getByteArrayValue());
+            kvs.add(kv);
+          }
+          deferred.callback(kvs);
+        } catch (RuntimeException e) {
+          deferred.callback(e);
+        }
+      }
+    }
+    
     // Sucks, have to have a family I guess
     try {
       final ListenableFuture<OperationResult<ColumnList<byte[]>>> future; 
@@ -198,8 +232,9 @@ public class HBaseClient {
       } else {
         future = query.withColumnSlice(
             Arrays.asList(request.qualifiers())).executeAsync();
-      }      
-      future.addListener(new ResponseCB(future), executor);
+      }
+      //future.addListener(new ResponseCB(future), executor);
+      Futures.addCallback(future, new FutureCB(), service);
     } catch (ConnectionException e) {
       deferred.callback(e);
     }
@@ -234,7 +269,23 @@ public class HBaseClient {
           }
         }
       }
-      future.addListener(new ResponseCB(), executor);
+      
+      class PutCB implements FutureCallback<OperationResult<Void>> {
+
+        @Override
+        public void onFailure(Throwable e) {
+          deferred.callback(e);
+        }
+        
+        @Override
+        public void onSuccess(OperationResult<Void> arg0) {
+          deferred.callback(null);
+        }
+        
+      }
+      
+      //future.addListener(new ResponseCB(), executor);
+      Futures.addCallback(future, new PutCB(), service);
     } catch (ConnectionException e) {
       deferred.callback(e);
     }
