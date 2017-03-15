@@ -252,43 +252,40 @@ public class HBaseClient {
     // TODO - all quals and values 
     mutation.withRow(column_family_schemas.get(request.family), request.key)
       .putColumn(request.qualifier(), request.value());
-    try {
-      final ListenableFuture<OperationResult<Void>> future = mutation.executeAsync();
-      
-      class ResponseCB implements Runnable {
-        @Override
-        public void run() {
-          try {
-            future.get().getResult();
-            deferred.callback(null);
-          } catch (InterruptedException e) {
-            deferred.callback(e);
-            Thread.currentThread().interrupt();
-          } catch (ExecutionException e) {
-            deferred.callback(e);
-          }
-        }
-      }
-      
-      class PutCB implements FutureCallback<OperationResult<Void>> {
+    
+    class OtherThread implements Runnable {
 
-        @Override
-        public void onFailure(Throwable e) {
+      @Override
+      public void run() {
+        // TODO Auto-generated method stub
+        try {
+          
+          final ListenableFuture<OperationResult<Void>> future = mutation.executeAsync();
+
+          class PutCB implements FutureCallback<OperationResult<Void>> {
+
+            @Override
+            public void onFailure(Throwable e) {
+              deferred.callback(e);
+            }
+            
+            @Override
+            public void onSuccess(OperationResult<Void> arg0) {
+              deferred.callback(null);
+            }
+            
+          }
+          
+          //future.addListener(new ResponseCB(), executor);
+          Futures.addCallback(future, new PutCB(), service);
+        } catch (ConnectionException e) {
           deferred.callback(e);
         }
-        
-        @Override
-        public void onSuccess(OperationResult<Void> arg0) {
-          deferred.callback(null);
-        }
-        
       }
       
-      //future.addListener(new ResponseCB(), executor);
-      Futures.addCallback(future, new PutCB(), service);
-    } catch (ConnectionException e) {
-      deferred.callback(e);
     }
+    
+    this.executor.execute(new OtherThread());
 
     return deferred;
   }
